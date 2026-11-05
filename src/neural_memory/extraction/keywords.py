@@ -351,7 +351,7 @@ _CJK_CHAT_CHARS: frozenset[str] = frozenset(
     "不没别勿"
     "这那样种些"
     "就还也都又再才"
-    "来去说做看查找答"
+    "来去说做看查找问"
     "一下个点"
     "非常很太挺更最"
     "如果但所以因然后话"
@@ -361,16 +361,29 @@ _CJK_CHAT_CHARS: frozenset[str] = frozenset(
 
 # Prefixes that mark a request or a question rather than a term. Multi-character
 # prefixes where a single character would also start ordinary words: 请 starts
-# 请求头 and 请求体, so only 请问/请帮 count; 我 starts 我方/我国/我军, so the
-# pronoun openers are left out and the all-characters test covers 我想知道.
+# 请求头 and 请求体, so only 请问/请帮 count.
+#
+# Pronouns are openers **only for runs of three or more characters**. 我 starts
+# 我方/我国/我军 and 他 starts 他人/他乡, all of which are two characters and must
+# survive; 我想看数据 and 我们的数据 are longer and must not. Two-character runs
+# are covered by `_CJK_FILLER_WORDS` instead.
 _CJK_OPENERS: tuple[str, ...] = (
     "帮我",
     "请问",
     "请帮",
+    "我",
+    "你",
+    "他",
+    "她",
+    "咱",
+    "您",
     "怎",
     "什么",
     "哪",
 )
+
+# Below this length an opener prefix does not decide anything on its own.
+_CJK_OPENER_MIN_LEN = 3
 
 
 def _is_cjk_invisible(ch: str) -> bool:
@@ -379,17 +392,20 @@ def _is_cjk_invisible(ch: str) -> bool:
     These survive copy-paste from web pages and would otherwise split a term in
     half -- 媒体\u200b投稿 -> 媒体 without this, which is worse than returning
     nothing because the half term retrieves the wrong memories. Category Cf
-    covers U+200B..U+200F, U+2060, U+00AD, U+180E and the rest of the class;
-    variation selectors are category Mn and are listed explicitly.
+    covers U+200B..U+200F, U+2060, U+00AD, U+180E and the rest of the class.
+    Variation selectors are category Mn: U+FE00..U+FE0F and the supplementary
+    set U+E0100..U+E01EF, the latter being the ideographic variation selectors
+    that exist specifically to decorate Han characters.
     """
-    return unicodedata.category(ch) == "Cf" or 0xFE00 <= ord(ch) <= 0xFE0F
+    cp = ord(ch)
+    return unicodedata.category(ch) == "Cf" or 0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF
 
 
-# Whole phrases that carry no retrieval signal. These cannot be caught by a
-# character test without also destroying content words -- 一 would take
-# 第一/统一/唯一 with it, 已 would take 自己 -- and 一个 slipped through the
-# character rule precisely because 一 is absent from the set while 个 is
-# present. The list is a backstop for the ratio rule, not a general solution.
+# Whole phrases that carry no retrieval signal. Most are also caught by the
+# all-characters test; six are load-bearing on their own -- 为什么 因为 好的
+# 怎么办 或者 而且 -- because at least one of their characters is not in
+# `_CJK_CHAT_CHARS`. Two-character function phrases live here because a
+# character rule cannot separate 一个 from 第一 or 可以 from 可靠.
 _CJK_FILLER_WORDS: frozenset[str] = frozenset(
     {
         "什么",
@@ -425,6 +441,10 @@ _CJK_FILLER_WORDS: frozenset[str] = frozenset(
         "应该",
         "需要",
         "帮我",
+        "等下",
+        "哪里",
+        "哪些",
+        "哪个",
     }
 )
 
@@ -433,10 +453,6 @@ _CJK_FILLER_WORDS: frozenset[str] = frozenset(
 # 权限 while 和平 / 和谐 / 总和 stay intact -- 和 is a content character when it
 # starts or ends the run.
 _CJK_CONJUNCTIONS = frozenset("和与及或")
-
-# Zero-width characters survive copy-paste from web pages and split a term in
-# half without being whitespace or Han. 媒体\u200b投稿 -> 媒体 without this.
-_CJK_ZERO_WIDTH = str.maketrans(dict.fromkeys("\u200b\u200c\u200d\ufeff"))
 
 
 def _split_conjunctions(run: str) -> list[str]:
@@ -468,7 +484,7 @@ def _is_cjk_utterance(run: str) -> bool:
     """
     if not run:
         return False
-    if run.startswith(_CJK_OPENERS):
+    if len(run) >= _CJK_OPENER_MIN_LEN and run.startswith(_CJK_OPENERS):
         return True
     return all(ch in _CJK_CHAT_CHARS or ch in _CJK_FILLER_CHARS for ch in run)
 

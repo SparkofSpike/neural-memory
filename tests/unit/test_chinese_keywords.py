@@ -401,17 +401,18 @@ class TestUtterances:
         """怎 / 哪 are openers — no ordinary term begins with them."""
         assert extract_keywords(text) == [], text
 
-    def test_determiner_plus_term_is_known_limitation(self) -> None:
-        """A determiner glued to a term is emitted whole.
+    def test_pronoun_plus_content_run_is_rejected(self) -> None:
+        """A pronoun opener applies from three characters up.
 
-        我们的数据 is a run of five with three function characters; no opener
-        covers it (我 starts 我方/我国, so it cannot be an opener) and it is not
-        all-chat characters (数据 contains 数 and 据). As an exact FTS phrase it
-        will not match a summary, so it fails safe — but it is a keyword that
-        is not the user's topic, and it is listed in the PR body as a limit
-        rather than pretended away.
+        我们的数据 is a run of five starting with 我; the all-characters test
+        cannot catch it because 数据 are content characters, so the opener test
+        is what does. Two-character 我方/我国 survive because the opener test
+        starts at three.
         """
-        assert extract_keywords("我们的数据") == ["我们的数据"]
+        assert extract_keywords("我们的数据") == []
+        assert extract_keywords("我想看数据") == []
+        assert extract_keywords("我方") == ["我方"]
+        assert extract_keywords("我国") == ["我国"]
 
     def test_ratio_not_applied_to_two_char_words(self) -> None:
         """统一 and 第一 are content words with a common second character."""
