@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from neural_memory.utils.cjk import is_cjk_char
@@ -331,10 +332,15 @@ _CJK_FILLER_CHARS: frozenset[str] = frozenset(
     "的了是在和与就都而及或吧呢吗啊嗯哦我你他她它这那有看把被让给个们"
 )
 
-# Pronouns, question words, modals, and the verbs of a chat request. A run made
-# mostly of these is an utterance, not a term -- 帮我看一下, 我想知道, 怎么样,
-# 是不是, 然后呢. Unlike `_CJK_FILLER_CHARS` this is not a claim that the
-# character is meaningless; it only feeds a ratio.
+# Pronouns, question words, modals, and the verbs of a chat request. Two rules
+# use this set: a run whose characters are **all** in it is an utterance
+# (是不是, 有没有, 会不会, 然后呢, 还有就是), and a run that **starts** with an
+# opener from `_CJK_OPENERS` is a request (帮我看一下, 我想知道, 怎么样).
+#
+# A proportion test was tried first and rejected: at any threshold that caught
+# the chat messages it also rejected 一对一, 请求头, 会话层, 不可用, 查看器 and
+# fourteen other ordinary terms, because a character being common says nothing
+# about whether a term made of it is common. See the review thread on #1.
 _CJK_CHAT_CHARS: frozenset[str] = frozenset(
     ""
     "我你他她它咱您"
@@ -353,19 +359,36 @@ _CJK_CHAT_CHARS: frozenset[str] = frozenset(
     ""
 )
 
-# A run at least this long in which at least this share of the characters are
-# chat/filler characters is treated as an utterance rather than a term. Ratios
-# are not applied to two-character runs: 统一 and 第一 are content words whose
-# second character happens to be common, and a two-character sample cannot
-# support a ratio.
-#
-# 0.6 rather than a lower threshold because 会 also belongs to 会议纪要 and
-# 会话管理, 要 to 需要, 非 to 非常: at 0.4 those terms were rejected as
-# utterances. At 0.6 every term I sampled survives (会议纪要 0.50, 会话管理
-# 0.25, 用户会话 0.25) while every chat message is still rejected (帮我看一下
-# 1.00, 怎么办 1.00, 我们的数据 0.60).
-_CJK_UTTERANCE_MIN_LEN = 3
-_CJK_UTTERANCE_RATIO = 0.6
+# Prefixes that mark a request or a question rather than a term. Multi-character
+# prefixes where a single character would also start ordinary words: 请 starts
+# 请求头 and 请求体, so only 请问/请帮 count.
+_CJK_OPENERS: tuple[str, ...] = (
+    "帮我",
+    "请问",
+    "请帮",
+    "我",
+    "你",
+    "他",
+    "她",
+    "咱",
+    "您",
+    "怎",
+    "什么",
+    "哪",
+)
+
+
+def _is_cjk_invisible(ch: str) -> bool:
+    """True for format characters and variation selectors: invisible, not Han.
+
+    These survive copy-paste from web pages and would otherwise split a term in
+    half -- 媒体\u200b投稿 -> 媒体 without this, which is worse than returning
+    nothing because the half term retrieves the wrong memories. Category Cf
+    covers U+200B..U+200F, U+2060, U+00AD, U+180E and the rest of the class;
+    variation selectors are category Mn and are listed explicitly.
+    """
+    return unicodedata.category(ch) == "Cf" or 0xFE00 <= ord(ch) <= 0xFE0F
+
 
 # Whole phrases that carry no retrieval signal. These cannot be caught by a
 # character test without also destroying content words -- 一 would take
@@ -434,22 +457,39 @@ def _split_conjunctions(run: str) -> list[str]:
 
 
 def _is_cjk_utterance(run: str) -> bool:
-    """True when a run is mostly pronouns, question words and modal verbs."""
-    if len(run) < _CJK_UTTERANCE_MIN_LEN:
+    """True when a run is a chat message rather than a term.
+
+    Two lexical tests, no proportion:
+
+    - every character is a chat/filler character (是不是, 有没有, 会不会,
+      然后呢, 还有就是), or
+    - it starts with a pronoun, request or question opener (帮我看一下,
+      我想知道, 怎么样, 我们的数据).
+
+    Both tests look at *which* characters, not *how many*. A ratio test was
+    tried and rejected: at any threshold that caught the chat messages it also
+    threw away 一对一, 请求头, 会话层, 不可用, 查看器 and fourteen other terms,
+    because a common character does not make a common word.
+    """
+    if not run:
         return False
-    chat = sum(1 for ch in run if ch in _CJK_CHAT_CHARS or ch in _CJK_FILLER_CHARS)
-    return chat / len(run) >= _CJK_UTTERANCE_RATIO
+    if run.startswith(_CJK_OPENERS):
+        return True
+    return all(ch in _CJK_CHAT_CHARS or ch in _CJK_FILLER_CHARS for ch in run)
 
 
 def _cjk_runs(text: str) -> list[str]:
     """Return every run of consecutive Han characters, in reading order.
 
-    Zero-width characters are dropped first so a term pasted from a web page
-    is not split in half. Runs are then split on inter-fragment conjunctions.
+    Invisible format characters are skipped rather than treated as separators,
+    so a term pasted from a web page is not split in half. Runs are then split
+    on inter-fragment conjunctions.
     """
     runs: list[str] = []
     current: list[str] = []
-    for ch in text.translate(_CJK_ZERO_WIDTH):
+    for ch in text:
+        if _is_cjk_invisible(ch):
+            continue
         if is_cjk_char(ch):
             current.append(ch)
         else:

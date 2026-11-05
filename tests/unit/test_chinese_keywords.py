@@ -330,24 +330,45 @@ class TestUtterances:
     @pytest.mark.parametrize(
         "text",
         [
+            # Terms whose characters are mostly chat/filler characters. A
+            # proportion rule rejected every one of these; the lexical rule
+            # must not. 一对一/请求头/会话层 are data-modelling and HTTP/OSI
+            # vocabulary, not chat.
+            "查看器",
+            "一对一",
+            "一对多",
+            "多对多",
+            "点对点",
+            "请求头",
+            "请求体",
+            "会话层",
+            "问答对",
+            "不可用",
+            "不可靠",
+            "还原点",
+            "说明会",
+            "非常规",
+            "非常态",
+            "说话人",
+            "与会者",
+            "应答码",
             "会议纪要",
             "会话管理",
             "用户会话",
             "可行性",
             "可靠性",
-            "上下文",
-            "上下线",
-            "工作人员",
-            "管理员",
-            "性能优化",
         ],
     )
     def test_term_sharing_a_chat_character_survives(self, text: str) -> None:
-        """The ratio is set at 0.6 for exactly these.
+        """A common character does not make a common word.
 
-        会 belongs to 会议纪要 and 会话管理 as well as to 会不会; 要 to 需要;
-        非 to 非常. At 0.4 these were rejected as utterances.
+        Each term here contains at least one character from
+        `_CJK_CHAT_CHARS`; several are three or four characters with two of them.
         """
+        assert extract_keywords(text) == [text], text
+
+    @pytest.mark.parametrize("text", ["需求变更", "需求说明"])
+    def test_demand_term_survives(self, text: str) -> None:
         assert extract_keywords(text) == [text], text
 
     def test_ratio_not_applied_to_two_char_words(self) -> None:
@@ -376,12 +397,32 @@ class TestConjunctions:
 class TestZeroWidth:
     """Copy-pasting from a web page must not halve a term."""
 
-    @pytest.mark.parametrize("zw", ["\u200b", "\u200c", "\u200d", "\ufeff"])
-    def test_zero_width_inside_term_is_ignored(self, zw: str) -> None:
-        assert extract_keywords(f"媒体{zw}投稿") == ["媒体投稿"]
+    @pytest.mark.parametrize(
+        ("name", "zw"),
+        [
+            ("zwsp", "\u200b"),
+            ("zwnj", "\u200c"),
+            ("zwj", "\u200d"),
+            ("bom", "\ufeff"),
+            ("word-joiner", "\u2060"),
+            ("soft-hyphen", "\u00ad"),
+            ("lrm", "\u200e"),
+            ("rlm", "\u200f"),
+            ("invisible-times", "\u2062"),
+            ("variation-selector", "\ufe0f"),
+        ],
+    )
+    def test_invisible_character_inside_term_is_ignored(self, name: str, zw: str) -> None:
+        assert extract_keywords(f"媒体{zw}投稿") == ["媒体投稿"], name
 
-    def test_zero_width_at_edges(self) -> None:
-        assert extract_keywords("\u200b媒体投稿\u200b") == ["媒体投稿"]
+    def test_invisible_characters_at_edges(self) -> None:
+        assert extract_keywords("\u200b媒体投稿\ufeff") == ["媒体投稿"]
+
+    @pytest.mark.parametrize("space", ["\u00a0", "\u3000", "\u2007", "\u202f", " "])
+    def test_real_space_still_separates(self, space: str) -> None:
+        """A genuine space is a word boundary on purpose; only invisible
+        format characters are dropped."""
+        assert extract_keywords(f"媒体{space}投稿") == ["媒体"]
 
 
 class TestChineseWeights:
