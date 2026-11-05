@@ -358,8 +358,14 @@ _CJK_CHAT_CHARS: frozenset[str] = frozenset(
 # are not applied to two-character runs: 统一 and 第一 are content words whose
 # second character happens to be common, and a two-character sample cannot
 # support a ratio.
+#
+# 0.6 rather than a lower threshold because 会 also belongs to 会议纪要 and
+# 会话管理, 要 to 需要, 非 to 非常: at 0.4 those terms were rejected as
+# utterances. At 0.6 every term I sampled survives (会议纪要 0.50, 会话管理
+# 0.25, 用户会话 0.25) while every chat message is still rejected (帮我看一下
+# 1.00, 怎么办 1.00, 我们的数据 0.60).
 _CJK_UTTERANCE_MIN_LEN = 3
-_CJK_UTTERANCE_RATIO = 0.4
+_CJK_UTTERANCE_RATIO = 0.6
 
 # Whole phrases that carry no retrieval signal. These cannot be caught by a
 # character test without also destroying content words -- 一 would take

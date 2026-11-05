@@ -327,6 +327,29 @@ class TestUtterances:
         """The rule must not touch runs of the same length that are terms."""
         assert extract_keywords(text) == [text]
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "会议纪要",
+            "会话管理",
+            "用户会话",
+            "可行性",
+            "可靠性",
+            "上下文",
+            "上下线",
+            "工作人员",
+            "管理员",
+            "性能优化",
+        ],
+    )
+    def test_term_sharing_a_chat_character_survives(self, text: str) -> None:
+        """The ratio is set at 0.6 for exactly these.
+
+        会 belongs to 会议纪要 and 会话管理 as well as to 会不会; 要 to 需要;
+        非 to 非常. At 0.4 these were rejected as utterances.
+        """
+        assert extract_keywords(text) == [text], text
+
     def test_ratio_not_applied_to_two_char_words(self) -> None:
         """统一 and 第一 are content words with a common second character."""
         for word in ("统一", "第一", "中国", "工作"):
