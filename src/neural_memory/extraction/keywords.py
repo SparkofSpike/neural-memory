@@ -342,11 +342,12 @@ def _cjk_runs(text: str) -> list[str]:
     return runs
 
 
-def _cjk_keyword(run: str) -> str:
+def _cjk_keyword(run: str, min_length: int) -> str:
     """Reduce a content run to something the spaced FTS index can match."""
     if len(run) <= _CJK_MAX_WHOLE_RUN:
         return run
-    return run[:_CJK_HEAD_FALLBACK]
+    keep = max(_CJK_HEAD_FALLBACK, min_length)
+    return run[:keep]
 
 
 def _extract_cjk_keyword(text: str, min_length: int) -> str | None:
@@ -360,7 +361,7 @@ def _extract_cjk_keyword(text: str, min_length: int) -> str | None:
     runs = [r for r in _cjk_runs(text) if len(r) >= min_length]
     if not runs:
         return None
-    return _cjk_keyword(max(runs, key=len))
+    return _cjk_keyword(max(runs, key=len), min_length)
 
 
 # Vietnamese diacritical character pattern (unique to Vietnamese, not French)

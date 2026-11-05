@@ -67,6 +67,14 @@ class TestChineseKeywordExtraction:
         keywords = extract_keywords("帮我看一下")
         assert not keywords, keywords
 
+    def test_min_length_is_honored_for_long_runs(self) -> None:
+        """The capped head must not shrink below the caller's floor."""
+        for text in ("服务器迁移情况", "数据库连接超时问题"):
+            for floor in (2, 3, 5):
+                keywords = extract_keywords(text, min_length=floor)
+                short = [k for k in keywords if len(k) < floor]
+                assert not short, f"{text!r} floor={floor} produced {short}"
+
     def test_stop_char_set_is_non_empty(self) -> None:
         assert CJK_STOP_CHARS
         assert "的" in CJK_STOP_CHARS
