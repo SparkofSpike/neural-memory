@@ -351,7 +351,7 @@ _CJK_CHAT_CHARS: frozenset[str] = frozenset(
     "不没别勿"
     "这那样种些"
     "就还也都又再才"
-    "来去说做看查找问答"
+    "来去说做看查找答"
     "一下个点"
     "非常很太挺更最"
     "如果但所以因然后话"
@@ -361,17 +361,12 @@ _CJK_CHAT_CHARS: frozenset[str] = frozenset(
 
 # Prefixes that mark a request or a question rather than a term. Multi-character
 # prefixes where a single character would also start ordinary words: 请 starts
-# 请求头 and 请求体, so only 请问/请帮 count.
+# 请求头 and 请求体, so only 请问/请帮 count; 我 starts 我方/我国/我军, so the
+# pronoun openers are left out and the all-characters test covers 我想知道.
 _CJK_OPENERS: tuple[str, ...] = (
     "帮我",
     "请问",
     "请帮",
-    "我",
-    "你",
-    "他",
-    "她",
-    "咱",
-    "您",
     "怎",
     "什么",
     "哪",

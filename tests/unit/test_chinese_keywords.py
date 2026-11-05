@@ -313,7 +313,6 @@ class TestUtterances:
             "然后呢",
             "还有就是",
             "这样的话",
-            "我们的数据",
         ],
     )
     def test_utterance_rejected(self, text: str) -> None:
@@ -370,6 +369,49 @@ class TestUtterances:
     @pytest.mark.parametrize("text", ["需求变更", "需求说明"])
     def test_demand_term_survives(self, text: str) -> None:
         assert extract_keywords(text) == [text], text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "我方",
+            "我国",
+            "我军",
+            "他人",
+            "他乡",
+            "您好",
+            "问答",
+            "问答系统",
+            "请示",
+            "请教",
+            "请假",
+            "请愿",
+            "请柬",
+        ],
+    )
+    def test_pronoun_or_request_prefix_is_not_an_opener(self, text: str) -> None:
+        """A pronoun only marks a request when the whole run is a request.
+
+        我 starts 我方/我国/我军 as well as 我想知道; 请 starts 请求头 and
+        请示 as well as 请问. Only the unambiguous prefixes are openers.
+        """
+        assert extract_keywords(text) == [text], text
+
+    @pytest.mark.parametrize("text", ["怎样", "哪些", "哪里", "怎么办到"])
+    def test_question_opener_rejected(self, text: str) -> None:
+        """怎 / 哪 are openers — no ordinary term begins with them."""
+        assert extract_keywords(text) == [], text
+
+    def test_determiner_plus_term_is_known_limitation(self) -> None:
+        """A determiner glued to a term is emitted whole.
+
+        我们的数据 is a run of five with three function characters; no opener
+        covers it (我 starts 我方/我国, so it cannot be an opener) and it is not
+        all-chat characters (数据 contains 数 and 据). As an exact FTS phrase it
+        will not match a summary, so it fails safe — but it is a keyword that
+        is not the user's topic, and it is listed in the PR body as a limit
+        rather than pretended away.
+        """
+        assert extract_keywords("我们的数据") == ["我们的数据"]
 
     def test_ratio_not_applied_to_two_char_words(self) -> None:
         """统一 and 第一 are content words with a common second character."""
