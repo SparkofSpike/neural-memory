@@ -132,3 +132,39 @@ async def test_migration_v41_v42_backfills_cjk_index(tmp_path: Path) -> None:
 
 async def store_add(store: SQLStorage, neuron: Neuron) -> None:
     await store.add_neuron(neuron)
+
+
+async def test_chinese_query_survives_extraction_into_recall(store: SQLStorage) -> None:
+    """A Chinese question must reach the FTS index, not be dropped before it.
+
+    The index side was already correct (#207), but ``extract_keywords`` used a
+    Latin-only character class and returned ``[]`` for Han text, so recall
+    answered "no relevant memories" for memories that were indexed. This walks
+    the whole chain: question -> keywords -> FTS phrase -> stored summary.
+    """
+    from neural_memory.extraction.keywords import extract_keywords
+
+    n = Neuron.create(type=NeuronType.CONCEPT, content="anchor")
+    await store.add_neuron(n)
+    fiber = Fiber.create(
+        neuron_ids={n.id},
+        synapse_ids=set(),
+        anchor_neuron_id=n.id,
+        summary="媒体投稿界面增加了定时投放功能",
+    )
+    await store.add_fiber(fiber)
+
+    for question in ("媒体投稿", "帮我查一下媒体投稿的记录"):
+        keywords = extract_keywords(question)
+        assert keywords, f"{question!r} produced no keywords, so FTS is never queried"
+        hits = await store.search_fiber_summaries(" ".join(keywords), limit=10)
+        assert any(f.id == fiber.id for f in hits), (
+            f"{question!r} -> keywords {keywords} did not reach the indexed fiber"
+        )
+
+
+async def test_chinese_query_without_content_words_returns_no_keywords() -> None:
+    """Pure filler must still yield nothing, so recall is not polluted."""
+    from neural_memory.extraction.keywords import extract_keywords
+
+    assert extract_keywords("帮我看一下") == []
