@@ -19,6 +19,8 @@ from neural_memory.extraction.keywords import (
 # Two-character words that a naive per-character stop-word filter destroys,
 # because one of their characters is a standalone particle elsewhere:
 # 会 (会议/社会/会计), 用 (用户), 更 (更新), 问 (问题), 果 (结果), 因 (原因).
+# Function phrases (可以, 因为, 一个 …) are excluded here on purpose — they are
+# dropped by design and covered by TestFillerWords.
 COMMON_TWO_CHAR_WORDS = [
     "社会",
     "未来",
@@ -286,6 +288,79 @@ class TestMinLength:
             assert not short, f"{text!r} floor={floor} produced {short}"
 
 
+class TestUtterances:
+    """A short chat message is not a term.
+
+    At a five-character cap, 帮我看一下 is a whole run and every earlier rule
+    accepts it: three of its five characters are not filler and it is not in
+    the phrase list. It would then be written as a fiber tag forever. The
+    density rule rejects runs made mostly of pronouns, question words and
+    modals.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "帮我看一下",
+            "请问一下",
+            "帮我查一下",
+            "我想知道",
+            "怎么样",
+            "怎么办",
+            "是不是",
+            "有没有",
+            "能不能",
+            "然后呢",
+            "还有就是",
+            "这样的话",
+            "我们的数据",
+        ],
+    )
+    def test_utterance_rejected(self, text: str) -> None:
+        assert extract_keywords(text) == [], text
+
+    @pytest.mark.parametrize(
+        "text",
+        ["服务器迁移", "角色管理页", "数据库连接", "媒体投稿", "神经记忆"],
+    )
+    def test_term_with_same_length_survives(self, text: str) -> None:
+        """The rule must not touch runs of the same length that are terms."""
+        assert extract_keywords(text) == [text]
+
+    def test_ratio_not_applied_to_two_char_words(self) -> None:
+        """统一 and 第一 are content words with a common second character."""
+        for word in ("统一", "第一", "中国", "工作"):
+            assert extract_keywords(word) == [word], word
+
+
+class TestConjunctions:
+    """和 / 与 / 及 join topics; they must not glue them into one phrase."""
+
+    @pytest.mark.parametrize("joiner", ["和", "与", "及", "或"])
+    def test_conjunction_splits_two_topics(self, joiner: str) -> None:
+        assert extract_keywords(f"用户{joiner}权限") == ["用户"]
+
+    def test_conjunction_only_splits_between_two_characters(self) -> None:
+        """和 is a content character when it starts or ends a run."""
+        for word in ("和平", "和谐", "和解", "总和", "总和统计"):
+            assert extract_keywords(word) == [word], word
+
+    def test_conjunction_keeps_both_sides_usable(self) -> None:
+        assert extract_keywords("媒体投稿和覆巢") == ["媒体投稿"]
+        assert extract_keywords("覆巢和媒体投稿") == ["媒体投稿"]
+
+
+class TestZeroWidth:
+    """Copy-pasting from a web page must not halve a term."""
+
+    @pytest.mark.parametrize("zw", ["\u200b", "\u200c", "\u200d", "\ufeff"])
+    def test_zero_width_inside_term_is_ignored(self, zw: str) -> None:
+        assert extract_keywords(f"媒体{zw}投稿") == ["媒体投稿"]
+
+    def test_zero_width_at_edges(self) -> None:
+        assert extract_keywords("\u200b媒体投稿\u200b") == ["媒体投稿"]
+
+
 class TestChineseWeights:
     """Chinese keywords must carry sane, sortable weights."""
 
@@ -326,16 +401,40 @@ class TestWritePath:
 
     @pytest.mark.asyncio()
     async def test_sentence_body_writes_no_junk_tag(self, storage) -> None:
-        """A refused keyword must not become a sentence-length tag."""
+        """A refused keyword must not become a junk tag.
+
+        The bound is the module's own cap, not a literal: a length assertion
+        written against a literal that is smaller than the constant asserts
+        nothing about the constant.
+        """
         from neural_memory.core.brain import BrainConfig
         from neural_memory.engine.encoder import MemoryEncoder
+        from neural_memory.extraction.keywords import _CJK_MAX_WHOLE_RUN
 
         encoder = MemoryEncoder(storage, BrainConfig())
         content = "帮我看一下媒体投稿的记录并把结果发给我"
         result = await encoder.encode(content=content)
 
         for tag in result.fiber.tags:
-            assert len(tag) <= 4, f"sentence-length tag written: {tag!r}"
+            assert len(tag) <= _CJK_MAX_WHOLE_RUN, f"over-cap tag written: {tag!r}"
+
+    @pytest.mark.asyncio()
+    async def test_chat_utterance_body_writes_no_tag(self, storage) -> None:
+        """A five-character chat message is a whole run at cap 5.
+
+        Pinned explicitly because it slipped through at that cap once: the
+        body is short enough to be a legal run and every length/phrase rule
+        accepted it, so it was persisted as a tag forever.
+        """
+        from neural_memory.core.brain import BrainConfig
+        from neural_memory.engine.encoder import MemoryEncoder
+        from neural_memory.extraction.keywords import extract_keywords
+
+        assert extract_keywords("帮我看一下") == []
+
+        encoder = MemoryEncoder(storage, BrainConfig())
+        result = await encoder.encode(content="帮我看一下")
+        assert result.fiber.tags == set(), result.fiber.tags
 
     @pytest.mark.asyncio()
     async def test_short_body_may_carry_a_keyword(self, storage) -> None:

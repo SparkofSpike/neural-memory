@@ -317,32 +317,62 @@ _CJK_ANY = re.compile(
 # nothing is.
 #
 # Five rather than four because a run of five is still a term, not a sentence:
-# 服务器迁移 and 角色管理页 are ordinary domain words. Measured on a 2,840-fiber
-# brain, raising the cap from 4 to 5 took queries that return at least one hit
-# from 7 to 9 of a 17-query sample; raising it further to 6, 8 or unbounded
-# changed nothing, because a longer exact phrase stops appearing in stored
-# summaries at all.
+# 服务器迁移 and 角色管理页 are ordinary domain words. It is a boundary, not a
+# solution: a six-character term still yields nothing, because an exact phrase
+# that long stops appearing in stored summaries and any window cut out of one
+# would be a guess. Segmentation is what would actually lift this bound.
 _CJK_MAX_WHOLE_RUN = 5
 
-# Characters with no retrieval signal on their own. Used for **one** decision
-# only: whether a run consists entirely of filler ("的了是在", "我们", "这个"),
-# in which case it is dropped. Deliberately **not** used to split a run: a
-# character being filler on its own says nothing about its role inside a word —
-# 会 belongs to 社会/会议/会计, 用 to 用户, 更 to 更新, 问 to 问题.
+# Characters with no retrieval signal on their own. Deliberately **not** used
+# to split a run: a character being filler on its own says nothing about its
+# role inside a word -- 会 belongs to 社会/会议/会计, 用 to 用户, 更 to 更新,
+# 问 to 问题. Used by the density rule below, and by the all-filler test.
 _CJK_FILLER_CHARS: frozenset[str] = frozenset(
     "的了是在和与就都而及或吧呢吗啊嗯哦我你他她它这那有看把被让给个们"
 )
 
-# Whole phrases that carry no retrieval signal. These cannot be caught by the
-# character rule above without also destroying content words -- 一 would take
-# 第一/统一/唯一 with it, 已 would take 自己 -- and `一个` slipped through it
-# precisely because 一 is absent from the set while 个 is present. Listed as
-# words instead.
+# Pronouns, question words, modals, and the verbs of a chat request. A run made
+# mostly of these is an utterance, not a term -- 帮我看一下, 我想知道, 怎么样,
+# 是不是, 然后呢. Unlike `_CJK_FILLER_CHARS` this is not a claim that the
+# character is meaningless; it only feeds a ratio.
+_CJK_CHAT_CHARS: frozenset[str] = frozenset(
+    ""
+    "我你他她它咱您"
+    "帮请让求给"
+    "想要知道觉得能否会可应该需"
+    "怎什么哪怎样多少几"
+    "么啊吧呢吗呀哦嗯"
+    "不没别勿"
+    "这那样种些"
+    "就还也都又再才"
+    "来去说做看查找问答"
+    "一下个点"
+    "非常很太挺更最"
+    "如果但所以因然后话"
+    "已现正将曾经刚"
+    ""
+)
+
+# A run at least this long in which at least this share of the characters are
+# chat/filler characters is treated as an utterance rather than a term. Ratios
+# are not applied to two-character runs: 统一 and 第一 are content words whose
+# second character happens to be common, and a two-character sample cannot
+# support a ratio.
+_CJK_UTTERANCE_MIN_LEN = 3
+_CJK_UTTERANCE_RATIO = 0.4
+
+# Whole phrases that carry no retrieval signal. These cannot be caught by a
+# character test without also destroying content words -- 一 would take
+# 第一/统一/唯一 with it, 已 would take 自己 -- and 一个 slipped through the
+# character rule precisely because 一 is absent from the set while 个 is
+# present. The list is a backstop for the ratio rule, not a general solution.
 _CJK_FILLER_WORDS: frozenset[str] = frozenset(
     {
         "什么",
         "怎么",
         "怎样",
+        "怎么样",
+        "怎么办",
         "为什么",
         "如果",
         "但是",
@@ -364,27 +394,64 @@ _CJK_FILLER_WORDS: frozenset[str] = frozenset(
         "或者",
         "而且",
         "然后",
+        "多少",
+        "几个",
+        "一些",
+        "非常",
+        "应该",
+        "需要",
+        "帮我",
     }
 )
+
+# Conjunctions that join two topics in Chinese. Used as a run separator **only**
+# when both sides keep at least two characters, so 用户和权限 yields 用户 and
+# 权限 while 和平 / 和谐 / 总和 stay intact -- 和 is a content character when it
+# starts or ends the run.
+_CJK_CONJUNCTIONS = frozenset("和与及或")
+
+# Zero-width characters survive copy-paste from web pages and split a term in
+# half without being whitespace or Han. 媒体\u200b投稿 -> 媒体 without this.
+_CJK_ZERO_WIDTH = str.maketrans(dict.fromkeys("\u200b\u200c\u200d\ufeff"))
+
+
+def _split_conjunctions(run: str) -> list[str]:
+    """Split a run on conjunctions that sit between two content fragments."""
+    parts: list[str] = []
+    start = 0
+    for i, ch in enumerate(run):
+        if ch in _CJK_CONJUNCTIONS and i - start >= 2 and len(run) - i - 1 >= 2:
+            parts.append(run[start:i])
+            start = i + 1
+    parts.append(run[start:])
+    return [p for p in parts if p]
+
+
+def _is_cjk_utterance(run: str) -> bool:
+    """True when a run is mostly pronouns, question words and modal verbs."""
+    if len(run) < _CJK_UTTERANCE_MIN_LEN:
+        return False
+    chat = sum(1 for ch in run if ch in _CJK_CHAT_CHARS or ch in _CJK_FILLER_CHARS)
+    return chat / len(run) >= _CJK_UTTERANCE_RATIO
 
 
 def _cjk_runs(text: str) -> list[str]:
     """Return every run of consecutive Han characters, in reading order.
 
-    Never splits inside a run, because Latin word boundaries do not exist here
-    and a single Han character is not a reliable separator.
+    Zero-width characters are dropped first so a term pasted from a web page
+    is not split in half. Runs are then split on inter-fragment conjunctions.
     """
     runs: list[str] = []
     current: list[str] = []
-    for ch in text:
+    for ch in text.translate(_CJK_ZERO_WIDTH):
         if is_cjk_char(ch):
             current.append(ch)
         else:
             if current:
-                runs.append("".join(current))
+                runs.extend(_split_conjunctions("".join(current)))
             current = []
     if current:
-        runs.append("".join(current))
+        runs.extend(_split_conjunctions("".join(current)))
     return runs
 
 
@@ -418,6 +485,7 @@ def _extract_cjk_keyword(text: str, min_length: int) -> str | None:
         if min_length <= len(run) <= _CJK_MAX_WHOLE_RUN
         and run not in _CJK_FILLER_WORDS
         and not all(ch in _CJK_FILLER_CHARS for ch in run)
+        and not _is_cjk_utterance(run)
     ]
     if not usable:
         return None
