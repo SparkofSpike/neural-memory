@@ -301,67 +301,75 @@ STOP_WORDS_VI: frozenset[str] = frozenset(
 # Combined stop words for backward compatibility
 STOP_WORDS: frozenset[str] = STOP_WORDS_EN | STOP_WORDS_VI | _STOP_WORDS_CONVERSATIONAL_EN
 
-# Han characters that carry no retrieval signal on their own: particles,
-# pronouns, prepositions, and the filler verbs of a conversational request
-# ("帮我看一下…"). A run is split at each of these, so filler cannot swallow
-# the term beside it.
-CJK_STOP_CHARS: frozenset[str] = frozenset(
-    "的了是在和与就都而及或一个我你他她它这那有看下把被让给对吧呢吗啊嗯哦"
-    "帮请问想要会让从到为以于等很太更最也还又只但所以如果因为"
-    "请帮忙给说做去来看过用拿放好知道能够可以什么怎么这个那个"
+# Han characters present anywhere in the text. Used as a cheap pre-check so
+# Latin-only input never pays for a per-character scan.
+_CJK_ANY = re.compile(
+    "[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+    "\U00020000-\U0002a6df\U0002a700-\U0002b73f\U0002b740-\U0002b81f"
+    "\U0002b820-\U0002ceaf\U0002ceb0-\U0002ebef\U00030000-\U0003134f]"
 )
 
-# A run of at most this many Han characters is plausibly one word. Longer runs
-# are sentences: ``utils/cjk.py`` indexes one hanzi per FTS token, so a whole
-# sentence becomes a phrase no stored summary contains.
+# A run of at most this many Han characters is plausibly a single word. A
+# longer run is a sentence, and there is no reliable way to pick one word out of
+# it without a segmenter: every window we could take is a guess, and a wrong
+# guess is worse than no guess. `_build_fts_query` phrases the term as a single
+# FTS phrase, so a guess that lands on a common but unrelated word retrieves
+# unrelated memories, and the fiber-summary tier then answers from its top hit.
 _CJK_MAX_WHOLE_RUN = 4
-# Leading characters kept from a run too long to be a single word. The head of
-# a Chinese compound is the modifier (媒体 in 媒体投稿), which is the part most
-# likely to appear in the stored text.
-_CJK_HEAD_FALLBACK = 2
+
+# Characters with no retrieval signal on their own. Used for **one** decision
+# only: whether a run consists entirely of filler ("的了是在", "我们", "这个"),
+# in which case it is dropped. Deliberately **not** used to split a run: a
+# character being filler on its own says nothing about its role inside a word —
+# 会 belongs to 社会/会议/会计, 用 to 用户, 更 to 更新, 问 to 问题.
+_CJK_FILLER_CHARS: frozenset[str] = frozenset(
+    "的了是在和与就都而及或吧呢吗啊嗯哦我你他她它这那有看把被让给个们"
+)
 
 
-def _cjk_runs(text: str) -> list[str]:
-    """Split text into runs of Han characters that carry content.
+def _longest_cjk_run(text: str) -> str:
+    """Return the longest run of consecutive Han characters in *text*.
 
-    Runs break on any non-Han character and on every stop character, so the
-    filler around a real term does not become part of it. Length filtering is
-    left to the caller, which knows the caller's ``min_length``.
+    Never splits inside a run, because Latin word boundaries do not exist here
+    and a single Han character is not a reliable separator.
     """
-    runs: list[str] = []
+    best = ""
     current: list[str] = []
     for ch in text:
-        if is_cjk_char(ch) and ch not in CJK_STOP_CHARS:
+        if is_cjk_char(ch):
             current.append(ch)
         else:
-            if current:
-                runs.append("".join(current))
+            if len(current) > len(best):
+                best = "".join(current)
             current = []
-    if current:
-        runs.append("".join(current))
-    return runs
-
-
-def _cjk_keyword(run: str, min_length: int) -> str:
-    """Reduce a content run to something the spaced FTS index can match."""
-    if len(run) <= _CJK_MAX_WHOLE_RUN:
-        return run
-    keep = max(_CJK_HEAD_FALLBACK, min_length)
-    return run[:keep]
+    if len(current) > len(best):
+        best = "".join(current)
+    return best
 
 
 def _extract_cjk_keyword(text: str, min_length: int) -> str | None:
-    """Pick the single most useful Chinese keyword from *text*.
+    """Pick a Chinese keyword for the spaced FTS index, or None.
 
-    Only one is returned, and it is the longest run. The FTS builder joins
+    Only a run short enough to plausibly be one word is returned. For a longer
+    run this returns None rather than guessing: a two- or four-character window
+    of a sentence is as likely to be a verb or a particle as it is to be the
+    topic (``我们明天开会讨论服务器迁移方案`` -> ``讨论``;
+    ``数据库连接超时`` -> ``数据``), and a wrong term silently retrieves the
+    wrong memories. Returning None leaves the caller exactly where it was
+    before this path existed — no Chinese keyword — which is honest.
+
+    Exactly one keyword is returned by design. ``_build_fts_query`` joins
     keywords with an implicit AND, so emitting several competing runs from one
-    query narrows the result set to text containing all of them -- for
-    ``神经记忆 consolidation 失败`` that drops the matches a user wants.
+    query narrows the result set to text containing all of them.
     """
-    runs = [r for r in _cjk_runs(text) if len(r) >= min_length]
-    if not runs:
+    if not _CJK_ANY.search(text):
         return None
-    return _cjk_keyword(max(runs, key=len), min_length)
+    run = _longest_cjk_run(text)
+    if len(run) < min_length or len(run) > _CJK_MAX_WHOLE_RUN:
+        return None
+    if all(ch in _CJK_FILLER_CHARS for ch in run):
+        return None
+    return run
 
 
 # Vietnamese diacritical character pattern (unique to Vietnamese, not French)

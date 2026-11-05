@@ -154,7 +154,7 @@ async def test_chinese_query_survives_extraction_into_recall(store: SQLStorage) 
     )
     await store.add_fiber(fiber)
 
-    for question in ("媒体投稿", "帮我查一下媒体投稿的记录"):
+    for question in ("媒体投稿", "投稿"):
         keywords = extract_keywords(question)
         assert keywords, f"{question!r} produced no keywords, so FTS is never queried"
         hits = await store.search_fiber_summaries(" ".join(keywords), limit=10)
@@ -163,8 +163,47 @@ async def test_chinese_query_survives_extraction_into_recall(store: SQLStorage) 
         )
 
 
+async def test_content_word_is_what_reaches_the_index(store: SQLStorage) -> None:
+    """A word made of characters that are particles elsewhere still works.
+
+    ``用户``/``更新``/``问题`` each contain a character that is a particle on
+    its own. Treating those characters as separators destroyed the word and
+    left recall with nothing to search, which is the bug this guards against.
+    """
+    from neural_memory.extraction.keywords import extract_keywords
+
+    n = Neuron.create(type=NeuronType.CONCEPT, content="anchor2")
+    await store.add_neuron(n)
+    fiber = Fiber.create(
+        neuron_ids={n.id},
+        synapse_ids=set(),
+        anchor_neuron_id=n.id,
+        summary="用户反馈更新后问题消失",
+    )
+    await store.add_fiber(fiber)
+
+    for word in ("用户", "更新", "问题"):
+        keywords = extract_keywords(word)
+        assert keywords == [word], f"{word!r} -> {keywords}"
+        hits = await store.search_fiber_summaries(" ".join(keywords), limit=10)
+        assert any(f.id == fiber.id for f in hits), f"{word!r} did not reach the fiber"
+
+
 async def test_chinese_query_without_content_words_returns_no_keywords() -> None:
     """Pure filler must still yield nothing, so recall is not polluted."""
     from neural_memory.extraction.keywords import extract_keywords
 
     assert extract_keywords("帮我看一下") == []
+
+
+async def test_long_chinese_sentence_is_not_guessed(store: SQLStorage) -> None:
+    """A sentence yields no keyword rather than a wrong one.
+
+    A window cut out of a sentence is as likely to be a verb as the topic, and
+    a wrong term retrieves the wrong memories. Refusing to guess keeps recall
+    honest: it returns nothing instead of something unrelated.
+    """
+    from neural_memory.extraction.keywords import extract_keywords
+
+    assert extract_keywords("帮我看一下媒体投稿的记录") == []
+    assert extract_keywords("我们明天开会讨论服务器迁移方案") == []
