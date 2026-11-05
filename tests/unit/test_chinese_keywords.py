@@ -401,6 +401,39 @@ class TestUtterances:
         """怎 / 哪 are openers — no ordinary term begins with them."""
         assert extract_keywords(text) == [], text
 
+    @pytest.mark.parametrize("text", ["哪天", "哪边", "哪儿", "多久", "几天"])
+    def test_two_char_question_word_rejected(self, text: str) -> None:
+        """The opener test starts at three characters, so the two-character
+        question words need the phrase list."""
+        assert extract_keywords(text) == [], text
+
+    @pytest.mark.parametrize(
+        ("query", "topic"),
+        [
+            ("答一下 权限", "权限"),
+            ("答一下 数据库", "数据库"),
+            ("回答一下 数据库", "数据库"),
+            ("请回答 数据库", "数据库"),
+            ("回答我 数据库", "数据库"),
+            ("讲一下 权限", "权限"),
+            ("解释一下 权限", "权限"),
+            ("写一下 权限", "权限"),
+            ("检查一下 配置", "配置"),
+            ("问一下 数据库", "数据库"),
+            ("我想看数据 备份策略", "备份策略"),
+            ("我知道数据 迁移方案", "迁移方案"),
+        ],
+    )
+    def test_verb_request_does_not_displace_the_topic(self, query: str, topic: str) -> None:
+        """A `do it briefly` wrapper must not become the keyword.
+
+        Each of these must return the noun the user actually asked about,
+        not the request phrase wrapped around it. Getting this wrong is worse
+        than returning nothing: `_build_fts_query` phrases the term and the
+        fiber-summary tier answers from its top hit.
+        """
+        assert extract_keywords(query) == [topic], query
+
     def test_pronoun_plus_content_run_is_rejected(self) -> None:
         """A pronoun opener applies from three characters up.
 

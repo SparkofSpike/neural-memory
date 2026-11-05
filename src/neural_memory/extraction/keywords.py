@@ -402,10 +402,11 @@ def _is_cjk_invisible(ch: str) -> bool:
 
 
 # Whole phrases that carry no retrieval signal. Most are also caught by the
-# all-characters test; six are load-bearing on their own -- 为什么 因为 好的
-# 怎么办 或者 而且 -- because at least one of their characters is not in
-# `_CJK_CHAT_CHARS`. Two-character function phrases live here because a
-# character rule cannot separate 一个 from 第一 or 可以 from 可靠.
+# all-characters test; eight are load-bearing on their own -- 为什么 哪里 因为
+# 好的 怎么办 或者 等下 而且 -- because at least one of their characters is not
+# in `_CJK_CHAT_CHARS`. Some entries are redundant and kept anyway, so the list
+# reads as a list: 一个 and 可以 are already all-chat characters and would be
+# rejected without an entry.
 _CJK_FILLER_WORDS: frozenset[str] = frozenset(
     {
         "什么",
@@ -445,8 +446,24 @@ _CJK_FILLER_WORDS: frozenset[str] = frozenset(
         "哪里",
         "哪些",
         "哪个",
+        "哪天",
+        "哪边",
+        "哪儿",
+        "多久",
+        "几天",
+        "请回答",
+        "回答我",
+        "答我",
     }
 )
+
+# A run ending in 一下 is a request ("do it briefly"): 答一下, 讲一下, 写一下,
+# 解释一下, 回答一下. The character test catches some of them but not the ones
+# whose verb is not a chat character, and each of them outranks a same-length
+# topic on the reading-order tie. Strip 一下 and reject when what is left is at
+# most two characters -- that is the whole shape, without a list per verb.
+_CJK_BRIEF_SUFFIX = "一下"
+_CJK_BRIEF_MAX_STEM = 2
 
 # Conjunctions that join two topics in Chinese. Used as a run separator **only**
 # when both sides keep at least two characters, so 用户和权限 yields 用户 and
@@ -470,23 +487,29 @@ def _split_conjunctions(run: str) -> list[str]:
 def _is_cjk_utterance(run: str) -> bool:
     """True when a run is a chat message rather than a term.
 
-    Two lexical tests, no proportion:
+    Three lexical tests, no proportion:
 
     - every character is a chat/filler character (是不是, 有没有, 会不会,
       然后呢, 还有就是), or
+    - it ends in 一下 with a stem of at most two characters (答一下, 讲一下,
+      解释一下, 回答一下), or
     - it starts with a pronoun, request or question opener (帮我看一下,
-      我想知道, 怎么样, 我们的数据).
+      我想知道, 怎么样, 我们的数据), and is at least three characters long.
 
-    Both tests look at *which* characters, not *how many*. A ratio test was
+    Every test looks at *which* characters, not *how many*. A ratio test was
     tried and rejected: at any threshold that caught the chat messages it also
     threw away 一对一, 请求头, 会话层, 不可用, 查看器 and fourteen other terms,
     because a common character does not make a common word.
     """
     if not run:
         return False
-    if len(run) >= _CJK_OPENER_MIN_LEN and run.startswith(_CJK_OPENERS):
+    if all(ch in _CJK_CHAT_CHARS or ch in _CJK_FILLER_CHARS for ch in run):
         return True
-    return all(ch in _CJK_CHAT_CHARS or ch in _CJK_FILLER_CHARS for ch in run)
+    if run.endswith(_CJK_BRIEF_SUFFIX) and len(run) - len(_CJK_BRIEF_SUFFIX) <= (
+        _CJK_BRIEF_MAX_STEM
+    ):
+        return True
+    return len(run) >= _CJK_OPENER_MIN_LEN and run.startswith(_CJK_OPENERS)
 
 
 def _cjk_runs(text: str) -> list[str]:
