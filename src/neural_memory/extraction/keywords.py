@@ -309,13 +309,20 @@ _CJK_ANY = re.compile(
     "\U0002b820-\U0002ceaf\U0002ceb0-\U0002ebef\U00030000-\U0003134f]"
 )
 
-# A run of at most this many Han characters is plausibly a single word. A
-# longer run is a sentence, and there is no reliable way to pick one word out of
-# it without a segmenter: every window we could take is a guess, and a wrong
-# guess is worse than no guess. `_build_fts_query` phrases the term as a single
-# FTS phrase, so a guess that lands on a common but unrelated word retrieves
-# unrelated memories, and the fiber-summary tier then answers from its top hit.
-_CJK_MAX_WHOLE_RUN = 4
+# Longest Han run still treated as one term. A run has no internal word
+# boundaries, so a window cut out of it would be a guess, and a guess that lands
+# on a common but unrelated word retrieves unrelated memories --
+# `_build_fts_query` phrases the term as a single FTS phrase and the
+# fiber-summary tier answers from its top hit. So the whole run is used or
+# nothing is.
+#
+# Five rather than four because a run of five is still a term, not a sentence:
+# 服务器迁移 and 角色管理页 are ordinary domain words. Measured on a 2,840-fiber
+# brain, raising the cap from 4 to 5 took queries that return at least one hit
+# from 7 to 9 of a 17-query sample; raising it further to 6, 8 or unbounded
+# changed nothing, because a longer exact phrase stops appearing in stored
+# summaries at all.
+_CJK_MAX_WHOLE_RUN = 5
 
 # Characters with no retrieval signal on their own. Used for **one** decision
 # only: whether a run consists entirely of filler ("的了是在", "我们", "这个"),
@@ -326,50 +333,95 @@ _CJK_FILLER_CHARS: frozenset[str] = frozenset(
     "的了是在和与就都而及或吧呢吗啊嗯哦我你他她它这那有看把被让给个们"
 )
 
+# Whole phrases that carry no retrieval signal. These cannot be caught by the
+# character rule above without also destroying content words -- 一 would take
+# 第一/统一/唯一 with it, 已 would take 自己 -- and `一个` slipped through it
+# precisely because 一 is absent from the set while 个 is present. Listed as
+# words instead.
+_CJK_FILLER_WORDS: frozenset[str] = frozenset(
+    {
+        "什么",
+        "怎么",
+        "怎样",
+        "为什么",
+        "如果",
+        "但是",
+        "所以",
+        "因为",
+        "一个",
+        "一下",
+        "我们",
+        "你们",
+        "他们",
+        "这个",
+        "那个",
+        "好的",
+        "可以",
+        "已经",
+        "现在",
+        "就是",
+        "还是",
+        "或者",
+        "而且",
+        "然后",
+    }
+)
 
-def _longest_cjk_run(text: str) -> str:
-    """Return the longest run of consecutive Han characters in *text*.
+
+def _cjk_runs(text: str) -> list[str]:
+    """Return every run of consecutive Han characters, in reading order.
 
     Never splits inside a run, because Latin word boundaries do not exist here
     and a single Han character is not a reliable separator.
     """
-    best = ""
+    runs: list[str] = []
     current: list[str] = []
     for ch in text:
         if is_cjk_char(ch):
             current.append(ch)
         else:
-            if len(current) > len(best):
-                best = "".join(current)
+            if current:
+                runs.append("".join(current))
             current = []
-    if len(current) > len(best):
-        best = "".join(current)
-    return best
+    if current:
+        runs.append("".join(current))
+    return runs
 
 
 def _extract_cjk_keyword(text: str, min_length: int) -> str | None:
     """Pick a Chinese keyword for the spaced FTS index, or None.
 
-    Only a run short enough to plausibly be one word is returned. For a longer
-    run this returns None rather than guessing: a two- or four-character window
-    of a sentence is as likely to be a verb or a particle as it is to be the
-    topic (``我们明天开会讨论服务器迁移方案`` -> ``讨论``;
-    ``数据库连接超时`` -> ``数据``), and a wrong term silently retrieves the
-    wrong memories. Returning None leaves the caller exactly where it was
-    before this path existed — no Chinese keyword — which is honest.
+    Every run is validated first, then the longest survivor is returned. Both
+    halves of that order matter: a run that is too long must not suppress a
+    shorter usable one (``媒体投稿 服务器迁移方案`` must still yield 媒体投稿),
+    and an all-filler run must not win on length (``我们的 数据`` must yield
+    数据). When two survivors are the same length the first in reading order
+    wins, so the result is deterministic.
 
-    Exactly one keyword is returned by design. ``_build_fts_query`` joins
-    keywords with an implicit AND, so emitting several competing runs from one
-    query narrows the result set to text containing all of them.
+    Refusing to cut a long run is deliberate. A two- or five-character window
+    of a sentence is as likely to be a verb or a particle as the topic
+    (``我们明天开会讨论服务器迁移方案`` -> ``讨论``;
+    ``数据库连接超时`` -> ``数据``), and a wrong term silently retrieves the
+    wrong memories. Returning None for an over-long run leaves the caller where
+    it was before this path existed, which is honest; segmentation is what
+    would actually solve it.
+
+    Exactly one keyword is returned because ``_build_fts_query`` joins keywords
+    with an implicit AND, so emitting several competing runs from one query
+    narrows the result set to text containing all of them.
     """
     if not _CJK_ANY.search(text):
         return None
-    run = _longest_cjk_run(text)
-    if len(run) < min_length or len(run) > _CJK_MAX_WHOLE_RUN:
+    usable = [
+        run
+        for run in _cjk_runs(text)
+        if min_length <= len(run) <= _CJK_MAX_WHOLE_RUN
+        and run not in _CJK_FILLER_WORDS
+        and not all(ch in _CJK_FILLER_CHARS for ch in run)
+    ]
+    if not usable:
         return None
-    if all(ch in _CJK_FILLER_CHARS for ch in run):
-        return None
-    return run
+    return max(usable, key=len)
 
 
 # Vietnamese diacritical character pattern (unique to Vietnamese, not French)

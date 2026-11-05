@@ -92,6 +92,8 @@ class TestLongRunsAreNotGuessed:
             "我们明天开会讨论服务器迁移方案",
             "覆巢演出音效错位",
             "数据库连接超时",
+            "媒体投稿记录",
+            "神经记忆系统",
         ],
     )
     def test_long_run_yields_no_keyword(self, text: str) -> None:
@@ -100,13 +102,86 @@ class TestLongRunsAreNotGuessed:
             f"sentence — that guess is what this guard exists to prevent"
         )
 
-    def test_long_run_does_not_emit_a_verb(self) -> None:
-        """The specific wrong answer found in review."""
-        assert "讨论" not in extract_keywords("我们明天开会讨论服务器迁移方案")
+    def test_named_wrong_guesses_not_emitted(self) -> None:
+        """Both wrong answers found in review, pinned by name.
 
-    def test_long_run_does_not_emit_a_wide_prefix(self) -> None:
-        """The specific wrong answer found in review."""
+        The ``== []`` cases above already cover these; keeping them explicit
+        stops a future loosening of the cap from silently reintroducing them.
+        """
+        assert "讨论" not in extract_keywords("我们明天开会讨论服务器迁移方案")
         assert "数据" not in extract_keywords("数据库连接超时")
+
+    def test_five_char_term_is_kept(self) -> None:
+        """Five characters is a term, not a sentence.
+
+        服务器迁移 and 角色管理页 are ordinary domain words; refusing them was
+        a cliff, not a policy.
+        """
+        assert extract_keywords("服务器迁移") == ["服务器迁移"]
+        assert extract_keywords("角色管理页") == ["角色管理页"]
+        assert extract_keywords("数据库连接") == ["数据库连接"]
+
+
+class TestRunSelection:
+    """Validation happens before selection, not after."""
+
+    def test_over_long_run_does_not_suppress_a_usable_one(self) -> None:
+        """The review found this discarded the whole query.
+
+        The fullwidth comma is the point: it is what a Chinese writer types,
+        and it is what separates the runs.
+        """
+        assert extract_keywords("媒体投稿，数据库连接超时") == ["媒体投稿"]  # noqa: RUF001
+        assert extract_keywords("媒体投稿 数据库连接超时") == ["媒体投稿"]
+
+    def test_filler_run_does_not_suppress_a_content_run(self) -> None:
+        """An all-filler run must not win on length."""
+        assert extract_keywords("我们的 数据") == ["数据"]
+        assert extract_keywords("数据 我们的") == ["数据"]
+        assert extract_keywords("的了是在 媒体投稿") == ["媒体投稿"]
+
+    def test_longest_usable_run_wins(self) -> None:
+        assert extract_keywords("媒体投稿 覆巢") == ["媒体投稿"]
+
+    def test_equal_length_tie_breaks_on_reading_order(self) -> None:
+        """Documented determinism, not incidental behaviour."""
+        assert extract_keywords("媒体投稿 覆巢演出") == ["媒体投稿"]
+        assert extract_keywords("覆巢演出 媒体投稿") == ["覆巢演出"]
+
+
+class TestFillerWords:
+    """High-frequency function phrases must not become search terms."""
+
+    @pytest.mark.parametrize(
+        "word",
+        [
+            "什么",
+            "怎么",
+            "怎样",
+            "为什么",
+            "如果",
+            "但是",
+            "所以",
+            "因为",
+            "一个",
+            "一下",
+            "我们",
+            "你们",
+            "这个",
+            "那个",
+            "好的",
+            "可以",
+            "已经",
+            "现在",
+        ],
+    )
+    def test_function_phrase_dropped(self, word: str) -> None:
+        assert extract_keywords(word) == [], word
+
+    def test_content_word_sharing_a_character_survives(self) -> None:
+        """A word list, not a character rule — 一 must not kill 第一."""
+        for word in ("第一", "统一", "唯一", "进一步"):
+            assert extract_keywords(word) == [word], word
 
 
 class TestChineseEnglishMixed:
@@ -124,21 +199,41 @@ class TestChineseEnglishMixed:
 
 
 class TestNoChineseRegression:
-    """Text without Han characters must behave exactly as before."""
+    """Text without Han characters must behave exactly as before.
+
+    Pinned against literal expected output, not against "non-empty and no
+    Han", so a change to the Latin path fails here instead of sliding by.
+    """
 
     @pytest.mark.parametrize(
-        "text",
+        ("text", "expected"),
         [
-            "The weather is nice today",
-            "neural memory bug",
-            "Hôm nay trời đẹp",
+            (
+                "The weather is nice today",
+                ["weather nice", "weather", "nice", "nice today", "today"],
+            ),
+            ("neural memory bug", ["neural memory", "neural", "memory", "memory bug", "bug"]),
+            (
+                "python programming language",
+                [
+                    "python programming",
+                    "python",
+                    "programming",
+                    "programming language",
+                    "language",
+                ],
+            ),
         ],
     )
-    def test_non_chinese_unchanged(self, text: str) -> None:
-        keywords = extract_keywords(text)
+    def test_english_output_unchanged(self, text: str, expected: list[str]) -> None:
+        assert extract_keywords(text) == expected
+
+    def test_vietnamese_output_unchanged(self) -> None:
+        # Without pyvi installed the fallback path runs; with pyvi the
+        # compound words join. Either way no Han keyword may appear.
+        keywords = extract_keywords("Hôm nay trời đẹp")
         assert keywords
-        for k in keywords:
-            assert not any("\u4e00" <= ch <= "\u9fff" for ch in k)
+        assert not any("\u4e00" <= ch <= "\u9fff" for k in keywords for ch in k)
 
     def test_empty_input(self) -> None:
         assert extract_keywords("") == []
@@ -146,11 +241,11 @@ class TestNoChineseRegression:
     def test_whitespace_only(self) -> None:
         assert extract_keywords("   ") == []
 
-    def test_english_weights_still_ordered(self) -> None:
+    def test_weight_decays_with_position(self) -> None:
+        """Not 「a sorted list is sorted」 — the actual positional decay."""
         weighted = extract_weighted_keywords("python programming language")
-        assert weighted
-        weights = [kw.weight for kw in weighted]
-        assert weights == sorted(weights, reverse=True)
+        scores = {kw.text: kw.weight for kw in weighted}
+        assert scores["python"] > scores["programming"] > scores["language"]
 
     @pytest.mark.parametrize(
         "text",
@@ -178,9 +273,11 @@ class TestMinLength:
         assert extract_keywords("媒体投稿", min_length=3) == ["媒体投稿"]
 
     def test_min_length_above_cap_yields_nothing(self) -> None:
-        """A floor of 5 cannot be met without cutting a long run, and cutting
-        is what this module refuses to do."""
-        assert extract_keywords("服务器迁移", min_length=5) == []
+        """A floor longer than any term we are willing to return is unmet."""
+        assert extract_keywords("媒体投稿记录", min_length=6) == []
+
+    def test_min_length_equal_to_cap_works(self) -> None:
+        assert extract_keywords("服务器迁移", min_length=5) == ["服务器迁移"]
 
     @pytest.mark.parametrize("text", ["服务器迁移", "数据库连接", "媒体投稿界面"])
     def test_no_keyword_shorter_than_min_length(self, text: str) -> None:
