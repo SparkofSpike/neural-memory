@@ -532,6 +532,9 @@ def _is_cjk_utterance(run: str) -> bool:
     if all(ch in _CJK_CHAT_CHARS or ch in _CJK_FILLER_CHARS for ch in run):
         return True
     stripped = _strip_modals(run)
+    # AA verb reduplication is a request, not a noun: 看看, 查查, 试试, 试试吧.
+    if len(stripped) >= 2 and stripped[0] == stripped[1]:
+        return True
     if stripped.endswith(_CJK_BRIEF_SUFFIX) and len(stripped) - len(_CJK_BRIEF_SUFFIX) <= (
         _CJK_BRIEF_MAX_STEM
     ):
