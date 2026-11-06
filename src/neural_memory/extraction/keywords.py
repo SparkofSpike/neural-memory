@@ -454,6 +454,17 @@ _CJK_FILLER_WORDS: frozenset[str] = frozenset(
         "哪儿",
         "多久",
         "几天",
+        "哪年",
+        "哪次",
+        "哪家",
+        "哪块",
+        "几时",
+        "几号",
+        "几月",
+        "几岁",
+        "为何",
+        "何时",
+        "何故",
         "请回答",
         "回答我",
         "答我",
@@ -487,6 +498,18 @@ def _split_conjunctions(run: str) -> list[str]:
     return [p for p in parts if p]
 
 
+# Modal particles that can trail any request: 分析一下吧, 确认一下呢, 整理一下啊.
+# Stripped before the 一下 test, otherwise one particle defeats it.
+_CJK_MODAL_PARTICLES = "吧呢啊呀哦嘛啦"
+
+
+def _strip_modals(run: str) -> str:
+    """Drop trailing modal particles so the shape underneath can be tested."""
+    while run and run[-1] in _CJK_MODAL_PARTICLES:
+        run = run[:-1]
+    return run
+
+
 def _is_cjk_utterance(run: str) -> bool:
     """True when a run is a chat message rather than a term.
 
@@ -494,8 +517,8 @@ def _is_cjk_utterance(run: str) -> bool:
 
     - every character is a chat/filler character (是不是, 有没有, 会不会,
       然后呢, 还有就是), or
-    - it ends in 一下 with a stem of at most two characters (答一下, 讲一下,
-      解释一下, 回答一下), or
+    - once trailing modal particles are removed, it ends in 一下 with a stem of
+      at most two characters (答一下, 讲一下, 解释一下, 分析一下吧), or
     - it starts with a pronoun, request or question opener (帮我看一下,
       我想知道, 怎么样, 我们的数据), and is at least three characters long.
 
@@ -508,7 +531,8 @@ def _is_cjk_utterance(run: str) -> bool:
         return False
     if all(ch in _CJK_CHAT_CHARS or ch in _CJK_FILLER_CHARS for ch in run):
         return True
-    if run.endswith(_CJK_BRIEF_SUFFIX) and len(run) - len(_CJK_BRIEF_SUFFIX) <= (
+    stripped = _strip_modals(run)
+    if stripped.endswith(_CJK_BRIEF_SUFFIX) and len(stripped) - len(_CJK_BRIEF_SUFFIX) <= (
         _CJK_BRIEF_MAX_STEM
     ):
         return True

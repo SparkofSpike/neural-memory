@@ -401,11 +401,35 @@ class TestUtterances:
         """怎 / 哪 are openers — no ordinary term begins with them."""
         assert extract_keywords(text) == [], text
 
-    @pytest.mark.parametrize("text", ["哪天", "哪边", "哪儿", "多久", "几天"])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "哪天",
+            "哪边",
+            "哪儿",
+            "多久",
+            "几天",
+            "哪年",
+            "哪次",
+            "哪家",
+            "哪块",
+            "几时",
+            "几号",
+            "几月",
+            "几岁",
+            "为何",
+            "何时",
+            "何故",
+        ],
+    )
     def test_two_char_question_word_rejected(self, text: str) -> None:
         """The opener test starts at three characters, so the two-character
-        question words need the phrase list."""
+        question words need the phrase list. 几何 is the one 几-initial word
+        that is content and it survives."""
         assert extract_keywords(text) == [], text
+
+    def test_jihe_survives(self) -> None:
+        assert extract_keywords("几何") == ["几何"]
 
     @pytest.mark.parametrize(
         ("query", "topic"),
@@ -422,6 +446,17 @@ class TestUtterances:
             ("问一下 数据库", "数据库"),
             ("我想看数据 备份策略", "备份策略"),
             ("我知道数据 迁移方案", "迁移方案"),
+            # A modal particle must not defeat the 一下 test.
+            ("分析一下吧 权限", "权限"),
+            ("测试一下吧 配置", "配置"),
+            ("确认一下呢 权限", "权限"),
+            ("解释一下吧 权限", "权限"),
+            ("整理一下啊 数据库", "数据库"),
+            ("讲一下吧 权限", "权限"),
+            ("写一下吧 权限", "权限"),
+            ("分析一下吧 用户权限", "用户权限"),
+            ("确认一下呢 数据库连接", "数据库连接"),
+            ("测试一下吧 服务器迁移", "服务器迁移"),
         ],
     )
     def test_verb_request_does_not_displace_the_topic(self, query: str, topic: str) -> None:
