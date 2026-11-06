@@ -77,10 +77,6 @@ class TestChineseKeywordExtraction:
         """min_length=2 applies to Chinese too."""
         assert extract_keywords("猫") == []
 
-    def test_pure_filler_yields_nothing(self) -> None:
-        """A run with no content word should not invent one."""
-        assert extract_keywords("的了是在") == []
-
 
 class TestLongRunsAreNotGuessed:
     """A sentence is not a keyword, and guessing one out of it is worse than
@@ -136,12 +132,6 @@ class TestRunSelection:
         assert extract_keywords("媒体投稿，数据库连接超时") == ["媒体投稿"]  # noqa: RUF001
         assert extract_keywords("媒体投稿 数据库连接超时") == ["媒体投稿"]
 
-    def test_filler_run_does_not_suppress_a_content_run(self) -> None:
-        """An all-filler run must not win on length."""
-        assert extract_keywords("我们的 数据") == ["数据"]
-        assert extract_keywords("数据 我们的") == ["数据"]
-        assert extract_keywords("的了是在 媒体投稿") == ["媒体投稿"]
-
     def test_longest_usable_run_wins(self) -> None:
         assert extract_keywords("媒体投稿 覆巢") == ["媒体投稿"]
 
@@ -149,41 +139,6 @@ class TestRunSelection:
         """Documented determinism, not incidental behaviour."""
         assert extract_keywords("媒体投稿 覆巢演出") == ["媒体投稿"]
         assert extract_keywords("覆巢演出 媒体投稿") == ["覆巢演出"]
-
-
-class TestFillerWords:
-    """High-frequency function phrases must not become search terms."""
-
-    @pytest.mark.parametrize(
-        "word",
-        [
-            "什么",
-            "怎么",
-            "怎样",
-            "为什么",
-            "如果",
-            "但是",
-            "所以",
-            "因为",
-            "一个",
-            "一下",
-            "我们",
-            "你们",
-            "这个",
-            "那个",
-            "好的",
-            "可以",
-            "已经",
-            "现在",
-        ],
-    )
-    def test_function_phrase_dropped(self, word: str) -> None:
-        assert extract_keywords(word) == [], word
-
-    def test_content_word_sharing_a_character_survives(self) -> None:
-        """A word list, not a character rule — 一 must not kill 第一."""
-        for word in ("第一", "统一", "唯一", "进一步"):
-            assert extract_keywords(word) == [word], word
 
 
 class TestChineseEnglishMixed:
@@ -288,254 +243,6 @@ class TestMinLength:
             assert not short, f"{text!r} floor={floor} produced {short}"
 
 
-class TestUtterances:
-    """A short chat message is not a term.
-
-    At a five-character cap, 帮我看一下 is a whole run and every earlier rule
-    accepts it: three of its five characters are not filler and it is not in
-    the phrase list. It would then be written as a fiber tag forever. The
-    density rule rejects runs made mostly of pronouns, question words and
-    modals.
-    """
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "帮我看一下",
-            "请问一下",
-            "帮我查一下",
-            "我想知道",
-            "怎么样",
-            "怎么办",
-            "是不是",
-            "有没有",
-            "能不能",
-            "然后呢",
-            "还有就是",
-            "这样的话",
-        ],
-    )
-    def test_utterance_rejected(self, text: str) -> None:
-        assert extract_keywords(text) == [], text
-
-    @pytest.mark.parametrize(
-        "text",
-        ["服务器迁移", "角色管理页", "数据库连接", "媒体投稿", "神经记忆"],
-    )
-    def test_term_with_same_length_survives(self, text: str) -> None:
-        """The rule must not touch runs of the same length that are terms."""
-        assert extract_keywords(text) == [text]
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            # Terms whose characters are mostly chat/filler characters. A
-            # proportion rule rejected every one of these; the lexical rule
-            # must not. 一对一/请求头/会话层 are data-modelling and HTTP/OSI
-            # vocabulary, not chat.
-            "查看器",
-            "一对一",
-            "一对多",
-            "多对多",
-            "点对点",
-            "请求头",
-            "请求体",
-            "会话层",
-            "问答对",
-            "不可用",
-            "不可靠",
-            "还原点",
-            "说明会",
-            "非常规",
-            "非常态",
-            "说话人",
-            "与会者",
-            "应答码",
-            "会议纪要",
-            "会话管理",
-            "用户会话",
-            "可行性",
-            "可靠性",
-        ],
-    )
-    def test_term_sharing_a_chat_character_survives(self, text: str) -> None:
-        """A common character does not make a common word.
-
-        Each term here contains at least one character from
-        `_CJK_CHAT_CHARS`; several are three or four characters with two of them.
-        """
-        assert extract_keywords(text) == [text], text
-
-    @pytest.mark.parametrize("text", ["需求变更", "需求说明"])
-    def test_demand_term_survives(self, text: str) -> None:
-        assert extract_keywords(text) == [text], text
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "我方",
-            "我国",
-            "我军",
-            "他人",
-            "他乡",
-            "您好",
-            "问答",
-            "问答系统",
-            "请示",
-            "请教",
-            "请假",
-            "请愿",
-            "请柬",
-        ],
-    )
-    def test_pronoun_or_request_prefix_is_not_an_opener(self, text: str) -> None:
-        """A pronoun only marks a request when the whole run is a request.
-
-        我 starts 我方/我国/我军 as well as 我想知道; 请 starts 请求头 and
-        请示 as well as 请问. Only the unambiguous prefixes are openers.
-        """
-        assert extract_keywords(text) == [text], text
-
-    @pytest.mark.parametrize("text", ["怎样", "哪些", "哪里", "怎么办到"])
-    def test_question_opener_rejected(self, text: str) -> None:
-        """怎 / 哪 are openers — no ordinary term begins with them."""
-        assert extract_keywords(text) == [], text
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "哪天",
-            "哪边",
-            "哪儿",
-            "多久",
-            "几天",
-            "哪年",
-            "哪次",
-            "哪家",
-            "哪块",
-            "几时",
-            "几号",
-            "几月",
-            "几岁",
-            "为何",
-            "何时",
-            "何故",
-        ],
-    )
-    def test_two_char_question_word_rejected(self, text: str) -> None:
-        """The opener test starts at three characters, so the two-character
-        question words need the phrase list. 几何 is the one 几-initial word
-        that is content and it survives."""
-        assert extract_keywords(text) == [], text
-
-    def test_jihe_survives(self) -> None:
-        assert extract_keywords("几何") == ["几何"]
-
-    @pytest.mark.parametrize(
-        ("query", "topic"),
-        [
-            ("答一下 权限", "权限"),
-            ("答一下 数据库", "数据库"),
-            ("回答一下 数据库", "数据库"),
-            ("请回答 数据库", "数据库"),
-            ("回答我 数据库", "数据库"),
-            ("讲一下 权限", "权限"),
-            ("解释一下 权限", "权限"),
-            ("写一下 权限", "权限"),
-            ("检查一下 配置", "配置"),
-            ("问一下 数据库", "数据库"),
-            ("我想看数据 备份策略", "备份策略"),
-            ("我知道数据 迁移方案", "迁移方案"),
-            # A modal particle must not defeat the 一下 test.
-            ("分析一下吧 权限", "权限"),
-            ("测试一下吧 配置", "配置"),
-            ("确认一下呢 权限", "权限"),
-            ("解释一下吧 权限", "权限"),
-            ("整理一下啊 数据库", "数据库"),
-            ("讲一下吧 权限", "权限"),
-            ("写一下吧 权限", "权限"),
-            ("分析一下吧 用户权限", "用户权限"),
-            ("确认一下呢 数据库连接", "数据库连接"),
-            ("测试一下吧 服务器迁移", "服务器迁移"),
-        ],
-    )
-    def test_verb_request_does_not_displace_the_topic(self, query: str, topic: str) -> None:
-        """A `do it briefly` wrapper must not become the keyword.
-
-        Each of these must return the noun the user actually asked about,
-        not the request phrase wrapped around it. Getting this wrong is worse
-        than returning nothing: `_build_fts_query` phrases the term and the
-        fiber-summary tier answers from its top hit.
-        """
-        assert extract_keywords(query) == [topic], query
-
-    def test_pronoun_plus_content_run_is_rejected(self) -> None:
-        """A pronoun opener applies from three characters up.
-
-        我们的数据 is a run of five starting with 我; the all-characters test
-        cannot catch it because 数据 are content characters, so the opener test
-        is what does. Two-character 我方/我国 survive because the opener test
-        starts at three.
-        """
-        assert extract_keywords("我们的数据") == []
-        assert extract_keywords("我想看数据") == []
-        assert extract_keywords("我方") == ["我方"]
-        assert extract_keywords("我国") == ["我国"]
-
-    def test_ratio_not_applied_to_two_char_words(self) -> None:
-        """统一 and 第一 are content words with a common second character."""
-        for word in ("统一", "第一", "中国", "工作"):
-            assert extract_keywords(word) == [word], word
-
-
-class TestConjunctions:
-    """和 / 与 / 及 join topics; they must not glue them into one phrase."""
-
-    @pytest.mark.parametrize("joiner", ["和", "与", "及", "或"])
-    def test_conjunction_splits_two_topics(self, joiner: str) -> None:
-        assert extract_keywords(f"用户{joiner}权限") == ["用户"]
-
-    def test_conjunction_only_splits_between_two_characters(self) -> None:
-        """和 is a content character when it starts or ends a run."""
-        for word in ("和平", "和谐", "和解", "总和", "总和统计"):
-            assert extract_keywords(word) == [word], word
-
-    def test_conjunction_keeps_both_sides_usable(self) -> None:
-        assert extract_keywords("媒体投稿和覆巢") == ["媒体投稿"]
-        assert extract_keywords("覆巢和媒体投稿") == ["媒体投稿"]
-
-
-class TestZeroWidth:
-    """Copy-pasting from a web page must not halve a term."""
-
-    @pytest.mark.parametrize(
-        ("name", "zw"),
-        [
-            ("zwsp", "\u200b"),
-            ("zwnj", "\u200c"),
-            ("zwj", "\u200d"),
-            ("bom", "\ufeff"),
-            ("word-joiner", "\u2060"),
-            ("soft-hyphen", "\u00ad"),
-            ("lrm", "\u200e"),
-            ("rlm", "\u200f"),
-            ("invisible-times", "\u2062"),
-            ("variation-selector", "\ufe0f"),
-        ],
-    )
-    def test_invisible_character_inside_term_is_ignored(self, name: str, zw: str) -> None:
-        assert extract_keywords(f"媒体{zw}投稿") == ["媒体投稿"], name
-
-    def test_invisible_characters_at_edges(self) -> None:
-        assert extract_keywords("\u200b媒体投稿\ufeff") == ["媒体投稿"]
-
-    @pytest.mark.parametrize("space", ["\u00a0", "\u3000", "\u2007", "\u202f", " "])
-    def test_real_space_still_separates(self, space: str) -> None:
-        """A genuine space is a word boundary on purpose; only invisible
-        format characters are dropped."""
-        assert extract_keywords(f"媒体{space}投稿") == ["媒体"]
-
-
 class TestChineseWeights:
     """Chinese keywords must carry sane, sortable weights."""
 
@@ -592,24 +299,6 @@ class TestWritePath:
 
         for tag in result.fiber.tags:
             assert len(tag) <= _CJK_MAX_WHOLE_RUN, f"over-cap tag written: {tag!r}"
-
-    @pytest.mark.asyncio()
-    async def test_chat_utterance_body_writes_no_tag(self, storage) -> None:
-        """A five-character chat message is a whole run at cap 5.
-
-        Pinned explicitly because it slipped through at that cap once: the
-        body is short enough to be a legal run and every length/phrase rule
-        accepted it, so it was persisted as a tag forever.
-        """
-        from neural_memory.core.brain import BrainConfig
-        from neural_memory.engine.encoder import MemoryEncoder
-        from neural_memory.extraction.keywords import extract_keywords
-
-        assert extract_keywords("帮我看一下") == []
-
-        encoder = MemoryEncoder(storage, BrainConfig())
-        result = await encoder.encode(content="帮我看一下")
-        assert result.fiber.tags == set(), result.fiber.tags
 
     @pytest.mark.asyncio()
     async def test_short_body_may_carry_a_keyword(self, storage) -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import unicodedata
 from dataclasses import dataclass
 
 from neural_memory.utils.cjk import is_cjk_char
@@ -324,279 +323,54 @@ _CJK_ANY = re.compile(
 # would be a guess. Segmentation is what would actually lift this bound.
 _CJK_MAX_WHOLE_RUN = 5
 
-# Characters with no retrieval signal on their own. Deliberately **not** used
-# to split a run: a character being filler on its own says nothing about its
-# role inside a word -- 会 belongs to 社会/会议/会计, 用 to 用户, 更 to 更新,
-# 问 to 问题. Used by the density rule below, and by the all-filler test.
-_CJK_FILLER_CHARS: frozenset[str] = frozenset(
-    "的了是在和与就都而及或吧呢吗啊嗯哦我你他她它这那有看把被让给个们"
-)
-
-# Pronouns, question words, modals, and the verbs of a chat request. Two rules
-# use this set: a run whose characters are **all** in it is an utterance
-# (是不是, 有没有, 会不会, 然后呢, 还有就是), and a run that **starts** with an
-# opener from `_CJK_OPENERS` is a request (帮我看一下, 我想知道, 怎么样).
-#
-# A proportion test was tried first and rejected: at any threshold that caught
-# the chat messages it also rejected 一对一, 请求头, 会话层, 不可用, 查看器 and
-# fourteen other ordinary terms, because a character being common says nothing
-# about whether a term made of it is common. See the review thread on #1.
-_CJK_CHAT_CHARS: frozenset[str] = frozenset(
-    ""
-    "我你他她它咱您"
-    "帮请让求给"
-    "想要知道觉得能否会可应该需"
-    "怎什么哪怎样多少几"
-    "么啊吧呢吗呀哦嗯"
-    "不没别勿"
-    "这那样种些"
-    "就还也都又再才"
-    "来去说做看查找问"
-    "一下个点"
-    "非常很太挺更最"
-    "如果但所以因然后话"
-    "已现正将曾经刚"
-    ""
-)
-
-# Prefixes that mark a request or a question rather than a term. Multi-character
-# prefixes where a single character would also start ordinary words: 请 starts
-# 请求头 and 请求体, so only 请问/请帮 count.
-#
-# Pronouns are openers **only for runs of three or more characters**. 我 starts
-# 我方/我国/我军 and 他 starts 他人/他乡, all of which are two characters and must
-# survive; 我想看数据 and 我们的数据 are longer and must not. Two-character runs
-# are covered by `_CJK_FILLER_WORDS` instead.
-_CJK_OPENERS: tuple[str, ...] = (
-    "帮我",
-    "请问",
-    "请帮",
-    "麻烦",
-    "能否",
-    "可否",
-    "我",
-    "你",
-    "他",
-    "她",
-    "咱",
-    "您",
-    "怎",
-    "什么",
-    "哪",
-)
-
-# Below this length an opener prefix does not decide anything on its own.
-_CJK_OPENER_MIN_LEN = 3
-
-
-def _is_cjk_invisible(ch: str) -> bool:
-    """True for format characters and variation selectors: invisible, not Han.
-
-    These survive copy-paste from web pages and would otherwise split a term in
-    half -- 媒体\u200b投稿 -> 媒体 without this, which is worse than returning
-    nothing because the half term retrieves the wrong memories. Category Cf
-    covers U+200B..U+200F, U+2060, U+00AD, U+180E and the rest of the class.
-    Variation selectors are category Mn: U+FE00..U+FE0F and the supplementary
-    set U+E0100..U+E01EF, the latter being the ideographic variation selectors
-    that exist specifically to decorate Han characters.
-    """
-    cp = ord(ch)
-    return unicodedata.category(ch) == "Cf" or 0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF
-
-
-# Whole phrases that carry no retrieval signal. Most are also caught by the
-# all-characters test; eight are load-bearing on their own -- 为什么 哪里 因为
-# 好的 怎么办 或者 等下 而且 -- because at least one of their characters is not
-# in `_CJK_CHAT_CHARS`. Some entries are redundant and kept anyway, so the list
-# reads as a list: 一个 and 可以 are already all-chat characters and would be
-# rejected without an entry.
-_CJK_FILLER_WORDS: frozenset[str] = frozenset(
-    {
-        "什么",
-        "怎么",
-        "怎样",
-        "怎么样",
-        "怎么办",
-        "为什么",
-        "如果",
-        "但是",
-        "所以",
-        "因为",
-        "一个",
-        "一下",
-        "我们",
-        "你们",
-        "他们",
-        "这个",
-        "那个",
-        "好的",
-        "可以",
-        "已经",
-        "现在",
-        "就是",
-        "还是",
-        "或者",
-        "而且",
-        "然后",
-        "多少",
-        "几个",
-        "一些",
-        "非常",
-        "应该",
-        "需要",
-        "帮我",
-        "等下",
-        "哪里",
-        "哪些",
-        "哪个",
-        "哪天",
-        "哪边",
-        "哪儿",
-        "多久",
-        "几天",
-        "哪年",
-        "哪次",
-        "哪家",
-        "哪块",
-        "几时",
-        "几号",
-        "几月",
-        "几岁",
-        "为何",
-        "何时",
-        "何故",
-        "请回答",
-        "回答我",
-        "答我",
-    }
-)
-
-# A run ending in 一下 is a request ("do it briefly"): 答一下, 讲一下, 写一下,
-# 解释一下, 回答一下. The character test catches some of them but not the ones
-# whose verb is not a chat character, and each of them outranks a same-length
-# topic on the reading-order tie. Strip 一下 and reject when what is left is at
-# most two characters -- that is the whole shape, without a list per verb.
-_CJK_BRIEF_SUFFIX = "一下"
-_CJK_BRIEF_MAX_STEM = 2
-
-# Conjunctions that join two topics in Chinese. Used as a run separator **only**
-# when both sides keep at least two characters, so 用户和权限 yields 用户 and
-# 权限 while 和平 / 和谐 / 总和 stay intact -- 和 is a content character when it
-# starts or ends the run.
-_CJK_CONJUNCTIONS = frozenset("和与及或")
-
-
-def _split_conjunctions(run: str) -> list[str]:
-    """Split a run on conjunctions that sit between two content fragments."""
-    parts: list[str] = []
-    start = 0
-    for i, ch in enumerate(run):
-        if ch in _CJK_CONJUNCTIONS and i - start >= 2 and len(run) - i - 1 >= 2:
-            parts.append(run[start:i])
-            start = i + 1
-    parts.append(run[start:])
-    return [p for p in parts if p]
-
-
-# Modal particles that can trail any request: 分析一下吧, 确认一下呢, 整理一下啊.
-# Stripped before the 一下 test, otherwise one particle defeats it.
-_CJK_MODAL_PARTICLES = "吧呢啊呀哦嘛啦"
-
-
-def _strip_modals(run: str) -> str:
-    """Drop trailing modal particles so the shape underneath can be tested."""
-    while run and run[-1] in _CJK_MODAL_PARTICLES:
-        run = run[:-1]
-    return run
-
-
-def _is_cjk_utterance(run: str) -> bool:
-    """True when a run is a chat message rather than a term.
-
-    Three lexical tests, no proportion:
-
-    - every character is a chat/filler character (是不是, 有没有, 会不会,
-      然后呢, 还有就是), or
-    - once trailing modal particles are removed, it ends in 一下 with a stem of
-      at most two characters (答一下, 讲一下, 解释一下, 分析一下吧), or
-    - it starts with a pronoun, request or question opener (帮我看一下,
-      我想知道, 怎么样, 我们的数据), and is at least three characters long.
-
-    Every test looks at *which* characters, not *how many*. A ratio test was
-    tried and rejected: at any threshold that caught the chat messages it also
-    threw away 一对一, 请求头, 会话层, 不可用, 查看器 and fourteen other terms,
-    because a common character does not make a common word.
-    """
-    if not run:
-        return False
-    if all(ch in _CJK_CHAT_CHARS or ch in _CJK_FILLER_CHARS for ch in run):
-        return True
-    stripped = _strip_modals(run)
-    # AA verb reduplication is a request, not a noun: 看看, 查查, 试试, 试试吧.
-    if len(stripped) >= 2 and stripped[0] == stripped[1]:
-        return True
-    if stripped.endswith(_CJK_BRIEF_SUFFIX) and len(stripped) - len(_CJK_BRIEF_SUFFIX) <= (
-        _CJK_BRIEF_MAX_STEM
-    ):
-        return True
-    return len(run) >= _CJK_OPENER_MIN_LEN and run.startswith(_CJK_OPENERS)
-
 
 def _cjk_runs(text: str) -> list[str]:
     """Return every run of consecutive Han characters, in reading order.
 
-    Invisible format characters are skipped rather than treated as separators,
-    so a term pasted from a web page is not split in half. Runs are then split
-    on inter-fragment conjunctions.
+    No splitting inside a run: Latin word boundaries do not exist here, and a
+    single Han character is not a reliable separator -- 会 belongs to
+    社会/会议/会计, 用 to 用户, 问 to 问题,
+    so cutting at characters that look like particles destroys the word.
+
+    There is deliberately no utterance or function-word filter. Callers are
+    agents, not people typing chat messages: a recall query is a search term
+    (媒体投稿, 用户, 服务器迁移), not
+    "帮我看一下媒体投稿的记录 吧". A filter for
+    chat phrasing was written and removed -- it cost 300 lines and every rule
+    it grew was rejected by the next review round with a fresh counterexample,
+    while never once changing the answer for a real query.
     """
     runs: list[str] = []
     current: list[str] = []
     for ch in text:
-        if _is_cjk_invisible(ch):
-            continue
         if is_cjk_char(ch):
             current.append(ch)
         else:
             if current:
-                runs.extend(_split_conjunctions("".join(current)))
+                runs.append("".join(current))
             current = []
     if current:
-        runs.extend(_split_conjunctions("".join(current)))
+        runs.append("".join(current))
     return runs
 
 
 def _extract_cjk_keyword(text: str, min_length: int) -> str | None:
     """Pick a Chinese keyword for the spaced FTS index, or None.
 
-    Every run is validated first, then the longest survivor is returned. Both
-    halves of that order matter: a run that is too long must not suppress a
-    shorter usable one (``媒体投稿 服务器迁移方案`` must still yield 媒体投稿),
-    and an all-filler run must not win on length (``我们的 数据`` must yield
-    数据). When two survivors are the same length the first in reading order
-    wins, so the result is deterministic.
+    The longest run that fits the word-length window wins. Nothing is cut out
+    of a run: a window of a sentence is as likely to be a verb as the topic
+    (数据库连接超时 -> 数据), and a wrong term silently
+    retrieves the wrong memories because `_build_fts_query` phrases it as one
+    FTS phrase. Returning None leaves the caller where it was before this path
+    existed, which is honest.
 
-    Refusing to cut a long run is deliberate. A two- or five-character window
-    of a sentence is as likely to be a verb or a particle as the topic
-    (``我们明天开会讨论服务器迁移方案`` -> ``讨论``;
-    ``数据库连接超时`` -> ``数据``), and a wrong term silently retrieves the
-    wrong memories. Returning None for an over-long run leaves the caller where
-    it was before this path existed, which is honest; segmentation is what
-    would actually solve it.
-
-    Exactly one keyword is returned because ``_build_fts_query`` joins keywords
-    with an implicit AND, so emitting several competing runs from one query
-    narrows the result set to text containing all of them.
+    Exactly one keyword is returned because `_build_fts_query` joins keywords
+    with an implicit AND, so emitting several competing runs would narrow the
+    result to text containing all of them.
     """
     if not _CJK_ANY.search(text):
         return None
-    usable = [
-        run
-        for run in _cjk_runs(text)
-        if min_length <= len(run) <= _CJK_MAX_WHOLE_RUN
-        and run not in _CJK_FILLER_WORDS
-        and not all(ch in _CJK_FILLER_CHARS for ch in run)
-        and not _is_cjk_utterance(run)
-    ]
+    usable = [run for run in _cjk_runs(text) if min_length <= len(run) <= _CJK_MAX_WHOLE_RUN]
     if not usable:
         return None
     return max(usable, key=len)
